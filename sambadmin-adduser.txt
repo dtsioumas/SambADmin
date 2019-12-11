@@ -1,0 +1,17 @@
+You need to choose one of this arguments
+    --student                   | Add a new student
+    --professor or -prof        | Add a new professor
+    --admin                     | Add a new addmin to our Domain
+    --special                   | Add a special user
+        e.g: sambadmin-adduser --student
+
+Extra arguments
+    --enable-unix-attr or -eux  | Enable user unix attributes
+        e.g.: sambadmin-adduser --proffessor --enable-unix-attr
+    --no-home-dir               | Disable creation of user's Home Directory	
+        e.g.: sambadmin-adduser --special --no-home-dir
+    --no-username-validation    | Disable username validation for Students
+        e.g.: sambadmin-adduser --student --no-username-validation
+    --erasmus                   | Disable username validation for Students
+        e.g.: sambadmin-adduser --student --erasmus
+

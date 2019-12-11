@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+
+HOME_PATH=/srv/samba/Students/
+USERNAME=$1
+if [ "$EUID" != "0" ];
+then
+	echo "This script must be run as root" 1>&2
+	exit
+fi
+
+if [[ $# -eq 0 || $# -gt 1 ]];
+then
+	echo "No valid arguments. sambadmin-deluser <USERNAME>"
+	exit 0
+fi
+EXISTS=`samba-tool user list | grep ${USERNAME} | wc -l`
+#Check if user exists
+if [[ ${EXISTS} -eq 1 ]];
+then
+   
+#Delete User
+samba-tool user delete ${USERNAME}
+
+#Delete Shared Home Directory
+echo "WARNING!!! Check if user's home directory you are going to delete is valid"
+rm -ir ${HOME_PATH}${USERNAME}
+
+else
+    echo "User ${USERNAME} doesn't exists"
+fi

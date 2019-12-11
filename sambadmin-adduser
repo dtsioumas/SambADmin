@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+
+PROJECT_DIR=`realpath $0 | sed 's./*[^/]\+/*$..'`
+GROUP_ARG=0
+
+for arguments in $* 
+do
+    case $arguments in 
+        --student)
+			STUDENT="1"
+            JOB_TITLE="Student"
+            GROUP="Students"
+            GROUP_ARGS=$((GROUP_ARG+1))
+            ;;
+        --professor|-prof)
+            PROF=1
+            JOB_TITLE="Professor"
+            GROUP="Professors"
+            GROUP_ARGS=$((GROUP_ARG+1))
+            ;;
+        --admin)
+            ADMIN=1
+            JOB_TITLE="Admin"
+            GROUP="Domain Admins"
+            GROUP_ARGS=$((GROUP_ARG+1))
+            ;;
+        --enable-unix-attr|-eux)
+            UNIX_ATTR=1
+            ;;
+        --no-home-dir)
+            NO_HOME_DIR=1
+            HOME_ATTRS=
+            ;;
+        --no-username-validation)
+            USR_VALID=1
+            ;;
+        --erasmus)
+            ERASMUS=1
+            ;;
+        --help|-h)
+            HELP=1
+            ;;
+        *) 
+            echo "No valid arguments, type -h or --help for more info"
+            exit 1
+            ;;
+    esac
+done
+
+#Obviously this script must run with root prvivileges
+if [ "$EUID" != "0" ];
+then
+    echo "You must have root privileges to run this script" 1>&2
+    exit
+fi
+
+#Arguments check
+if [[ $# -eq 0 || (( ${GROUP_ARGS} -ne 1 && ${HELP} -ne 1)) ]];
+then
+    echo "No valid arguments, type -h or --help "
+    exit 0
+fi
+
+#Help
+if [[ ${HELP} -eq 1 ]];
+then
+    cat ${PROJECT_DIR}/sambadmin-adduser.txt
+    exit 0
+fi 
+
+CreateUser() {
+    samba-tool user create ${USERNAME} \
+        --use-username-as-cn \
+        --surname=${SURNAME} \
+        --given-name=${FIRSTNAME} \
+        --job-title=${JOB_TITLE} \
+        --profile-path=${PROFILE_PATH} \
+        --mail-address=${MAIL_ADDRESS} \
+        ${HOME_ATTRS} || exit 1
+
+    #Setting Unix Attributes after user's creation (in case this scripts run by 2 admins simultaneously)
+    #No Unix Attributes for Admins and Professors by default
+    if [[ (${PROF} -ne 1 && ${ADMIN} -ne 1 ) || ${UNIX_ATTR} -eq 1  ]] 
+    then
+        SetUnixAttrs
+    fi
+    
+    #Disable password expiration for User
+    if [[ ${ERASMUS} -eq 1 ]]
+    then
+        samba-tool user setexpiry ${USERNAME} --days=365 || { /bin/bash ${PROJECT_DIR}/sambadmin-deluser ${USERNAME}; exit 1; }
+    else
+        samba-tool user setexpiry ${USERNAME} --noexpiry || { /bin/bash ${PROJECT_DIR}/sambadmin-deluser ${USERNAME}; exit 1; }
+    fi  
+    
+    #Add user to her/his group
+    if [[ -z ${GROUP} ]]
+    then
+        echo "User: ${USERNAME} didn't added at any group"
+    else
+        samba-tool group addmembers "${GROUP}" ${USERNAME} || { /bin/bash ${PROJECT_DIR}/sambadmin-deluser ${USERNAME}; exit 1; }
+    fi
+
+    #Create User's Home Directory
+    if [[ ${NO_HOME_DIR} -ne 1 ]]
+    then
+        mkdir /srv/samba/Students/${USERNAME}/ || { /bin/bash ${PROJECT_DIR}/sambadmin-deluser ${USERNAME}; exit 1; }
+        chown -R ${USERNAME}:"Domain Admins" /srv/samba/Students/${USERNAME}/ || { /bin/bash ${PROJECT_DIR}/sambadmin-deluser ${USERNAME}; exit 1; }
+        chmod 700 /srv/samba/Students/${USERNAME}/ || { /bin/bash ${PROJECT_DIR}/sambadmin-deluser ${USERNAME}; exit 1; }
+        #Quota
+        setquota -u ${USERNAME} 204800 1433600 0 0 -a /srv || { /bin/bash ${PROJECT_DIR}/sambadmin-deluser ${USERNAME}; exit 1; }
+    fi
+
+	echo "`date +"%d-%b-%Y %T"` [SambADmin-adduser:] Succesfully created User: Username[${USERNAME}] & Fullname[${FIRSTNAME} ${SURNAME}]." >> ${PROJECT_DIR}/logs/SambADmin.log
+
+}
+
+SetUserAttributes()
+{
+    echo "Set User Attributes"
+    HOME_DRIVE="P"
+    PROFILE_PATH="\\\\CHEF.CSLABS.UNIPI.GR\\profiles\\profile-user"
+    HOME_DIRECTORY="\\\\CHEF.CSLABS.UNIPI.GR\\Homes\\${USERNAME}"
+    #Unix Attributes
+    NIS_DOMAIN="cslabs"
+    GID_NUMBER="513"
+    LOGIN_SHELL="/bin/false"
+    UNIX_HOME="/home/${USERNAME}"
+    #Mail attribute
+    MAIL_ADDRESS="${USERNAME}@students.cs.unipi.gr"
+
+    if [[ ${NO_HOME_DIR} -ne 1 ]]
+    then
+        HOME_ATTRS="
+            --home-directory=${HOME_DIRECTORY}
+            --home-drive=${HOME_DRIVE}
+        "   
+        
+    fi 
+}
+GetUserAttributes(){
+    echo "Lastname of ${JOB_TITLE}:"
+    read SURNAME
+    echo "Firstname of ${JOB_TITLE}:"
+    read FIRSTNAME
+    echo "Username of ${JOB_TITLE} (e.g. p00000):"
+    read USERNAME
+    
+    #Student username validation
+    STUDENT_REG=`echo "${USERNAME}" | egrep -e "^p[0-9]{5}$|^mpsp[0-9]{5}$|^mppl[0-9]{5}$"`
+    if [[ -z ${STUDENT_REG} && ${STUDENT} -eq 1 && ${ERASMUS} -ne 1 && ${USR_VALID} -ne 1 ]]
+    then
+        echo "Student's username doesn't match with this pattern (p#####, mpsp#####. mppl#####)"
+        echo "You could use --no-username-validation option or --help for more info"
+        exit 1
+    fi
+    
+
+    echo "Creating User: Username[${USERNAME}] & Fullname[${FIRSTNAME} ${SURNAME}]. Ok?[y/N]"
+    read RESPONSE
+    case $RESPONSE in
+        [Yy][Ee][Ss]|[Yy])
+            echo "Ok"
+                ;;
+        *)
+                exit
+                ;;
+    esac
+}
+
+SetUnixAttrs(){
+
+    #(Last UID)+1
+    NEXTUID=$((`ldbsearch -H /var/lib/samba/private/sam.ldb '(objectclass=person)' | grep uidNumber  | awk '{print $NF}' | sort -g | tail -n 1`+1))
+
+    echo "Setting Unix Attributes"
+    echo "User uidNumber: ${NEXTUID}"
+
+    cat << EOF > /tmp/${USERNAME}.ldif
+dn: CN=${USERNAME},CN=Users,DC=cslabs,DC=unipi,DC=gr
+changetype: modify
+add: uid
+uid: ${USERNAME}
+-
+add: msSFU30Name
+msSFU30Name: ${USERNAME}
+-
+add: msSFU30NisDomain
+msSFU30NisDomain: ${NIS_DOMAIN}
+-
+add: uidNumber
+uidNumber: ${NEXTUID}
+-
+add: gidNumber
+gidNumber: ${GID_NUMBER}
+-
+add: loginShell
+loginShell: ${LOGIN_SHELL}
+-
+add: unixHomeDirectory
+unixHomeDirectory: ${UNIX_HOME}
+
+EOF
+    ldbmodify -H /var/lib/samba/private/sam.ldb /tmp/${USERNAME}.ldif -U Administrator || { /bin/bash ${PROJECT_DIR}/sambadmin-deluser ${USERNAME}; exit 1; }
+}
+
+GetUserAttributes
+SetUserAttributes
+CreateUser
